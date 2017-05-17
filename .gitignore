@@ -39,3 +39,5 @@ desktop.ini
 npm-debug.log
 
 *.sassc
+
+*.codekit3
