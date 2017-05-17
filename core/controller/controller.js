@@ -163,7 +163,7 @@ function SuperController(options) {
             set('page.namespace', namespace);
             set('page.title', rule.replace(new RegExp('@'+options.conf.bundle), ''));
             set('page.forms', options.conf.content.forms);
-            
+
             var acceptLanguage = 'en-US'; // by default
             if ( typeof(req.headers['accept-language']) != 'undefined' ) {
                 acceptLanguage = req.headers['accept-language']
@@ -397,7 +397,7 @@ function SuperController(options) {
                         if ( typeof(routing[rule]) != 'undefined' ) { //found
                             url = routing[rule].url;
                             if ( typeof(routing[rule].requirements) != 'undefined' ) {
-                                
+
                                 for (var p in routing[rule].requirements) {
                                     if ( Array.isArray(url) ) {
                                         for (var i= 0, len = url.length; i< len; ++i) {
@@ -575,7 +575,7 @@ function SuperController(options) {
         if (!jsonObj) {
             var jsonObj = {}
         }
-        
+
         try {
             // just in case
             if ( typeof(jsonObj) == 'string') {
@@ -585,7 +585,7 @@ function SuperController(options) {
             if( typeof(local.options) != "undefined" && typeof(local.options.charset) != "undefined" ){
                 local.res.setHeader("charset", local.options.charset);
             }
-            
+
 
             //catching errors
             if (
@@ -798,7 +798,7 @@ function SuperController(options) {
                         }
 
                     } else {
-                        css.content[resArr[res]] = '<link href="'+ resArr[res] +'" media="screen" rel="'+ css.rel +'" type="'+ css.type +'">';
+                        css.content[resArr[res]] = '<link href="'+ resArr[res] +'" rel="'+ css.rel +'">';
                         resStr += '\n\t' + css.content[resArr[res]]
                     }
 
