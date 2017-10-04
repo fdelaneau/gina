@@ -31,7 +31,14 @@ function triggerEvent (target, element, name, args) {
             // Check if listener is in use: e.g $('#selector').on('eventName', cb)
             var $events = null; // attached events list
             // Before jQuery 1.7
-            if (jQuery['fn']['jquery'].substr(0,3) <= '1.7') {
+            var version = jQuery['fn']['jquery'].split(/\./);
+            if (version.length > 2) {
+                version = version.splice(0,2).join('.');
+            } else {
+                version = version.join('.');
+            }
+
+            if (version <= '1.7') {
                 $events = jQuery(element)['data']('events')
             } else {// From 1.8 +
                 $events = jQuery['_data'](jQuery(element)[0], "events")
@@ -44,6 +51,8 @@ function triggerEvent (target, element, name, args) {
                 jQuery(element)['trigger'](evt, args);
                 isDefaultPrevented = evt['isDefaultPrevented']();
             }
+
+
         }
 
         if (window.CustomEvent || document.createEvent) {
@@ -69,6 +78,9 @@ function triggerEvent (target, element, name, args) {
 
             }
 
+            if ( typeof(evt.defaultPrevented) != 'undefined' && evt.defaultPrevented )
+                isDefaultPrevented = evt.defaultPrevented;
+
             if ( !isDefaultPrevented ) {
                 //console.log('dispatching ['+name+'] to ', element.id, isAttachedToDOM, evt.detail);
                 element.dispatchEvent(evt)
@@ -89,14 +101,19 @@ function triggerEvent (target, element, name, args) {
 
 function cancelEvent(event) {
     if (typeof(event) != 'undefined' && event != null) {
-        if (event.stopPropagation) {
-            event.stopPropagation()
-        }
+
         event.cancelBubble = true;
+
         if (event.preventDefault) {
             event.preventDefault()
         }
-        event.returnValue = false
+
+        if (event.stopPropagation) {
+            event.stopPropagation()
+        }
+
+
+        event.returnValue = false;
     }
 }
 
@@ -115,8 +132,12 @@ function removeListener(target, element, name, callback) {
         target.customEvent.removeListener(name, callback)
     }
 
-    if ( typeof(gina.events[name]) != 'undefined' )
+    //console.log('tying to removing ', name, element);// avoid event proxies
+    //if (! /^(click|submit)$/.test(name))
+    if ( /**! /^(click|submit)$/.test(name) &&*/ typeof(gina.events[name]) != 'undefined' ) {
+        //console.log('------> [removed] ' + name);
         delete gina.events[name]
+    }
 }
 
 function on(event, cb) {
@@ -166,7 +187,8 @@ function on(event, cb) {
                     data = this.eventData.success;
                 }
 
-                cb(e, data)
+                if (cb)
+                    cb(e, data);
             });
 
             if (this.initialized && !this.isReady)

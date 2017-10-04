@@ -15,6 +15,9 @@
  *  @param {object} filter
  *      eg.: { uid: "someUID" }
  *      eg.: { type: "not null" }
+ *      eg.: { "obj.prop": true }
+ *      eg.: { "lastUpdate": ">= 2016-12-01T00:00:00" }
+ *      eg.: { "activity": null }
  *
  *  @return {array} result
  *
@@ -42,20 +45,25 @@ function Collection(content, option) {
         'locale': 'en' // get settigs.region, or user.region
     };
 
-    var content     = JSON.parse(JSON.stringify(content)) || [] // original content -> not to be touched
+    var content     = (content) ? JSON.parse(JSON.stringify(content)) : [] // original content -> not to be touched
+    //var content     = (Array.isArray(content)) ? content : [] // original content -> not to be touched
         , options   = (typeof(options) == 'object') ? merge(options, defaultOptions) : defaultOptions
         , keywords  = ['not null'] // TODO - null, exists (`true` if property is defined)
         ;
     ;
 
-    if ( content.length > 0 && typeof(content[0]._uid) == 'undefined' ) {
-        this['uuids'] = {};
+    this['uuids'] = {}; // uuids are generated for each new instance
+    if ( content.length > 0 ) {
         for (var i = 0, len = content.length; i<len; ++i) {
+            if (!content[i]) {
+                //    throw new Error('field index `'+ i +'` cannot be left undefined or null !');
+                //content.splice(i, 1);
+                content[i] = { id: uuid.v4(), noEntryFound: true };
+            }
+
             content[i]._uuid = uuid.v4();
             this['uuids'][ content[i]._uuid ] = content[i]
         }
-    } else {
-        this['uuids'] = []
     }
 
     //this.find = function(filter, withOrClause) {
@@ -72,12 +80,12 @@ function Collection(content, option) {
 
         if ( typeof(filters) != 'undefined' && typeof(filters) !== 'object' ) {
             throw new Error('filter must be an object');
-        } else if ( typeof(filters) != 'undefined' ) {
+        } else if ( typeof(filters) != 'undefined' && filters.count() > 0 ) {
 
             var filter              = null
                 , condition         = null
                 , i                 = 0
-                , tmpContent        = Array.isArray(this) ? this : JSON.parse(JSON.stringify(content))
+                , tmpContent        = ( Array.isArray(this) && !withOrClause) ? this : JSON.parse(JSON.stringify(content))
                 , resultObj         = {}
                 , result            = []
                 , localeLowerCase   = ''
@@ -87,6 +95,10 @@ function Collection(content, option) {
                 ;
 
             for (var o in tmpContent) {
+
+                if (!tmpContent[o]) {
+                    tmpContent[o] = {}
+                }
                 tmpContent[o].matched = {};
                 for (var l = 0, lLen = filters.count(); l<lLen; ++l) {
                     filter = filters[l];
@@ -95,7 +107,7 @@ function Collection(content, option) {
                     for (var f in filter) {
                         if ( typeof(filter[f]) == 'undefined' ) throw new Error('filter `'+f+'` cannot be left undefined');
 
-                        localeLowerCase = ( typeof(filter[f]) != 'boolean' ) ? filter[f].toLocaleLowerCase() : filter[f];
+                        localeLowerCase = ( typeof(filter[f]) != 'boolean' && filter[f] !== null ) ? filter[f].toLocaleLowerCase() : filter[f];
                         // cases with tmpContent.prop
                         if ( /\./.test(f) ) {
                             //JSON.stringify(tmpContent[o]).match(/("gross":\w+)/)[1].split(/:/)[1]
@@ -104,19 +116,29 @@ function Collection(content, option) {
                             re = new RegExp('("'+ field +'":\\w+)' );
                             if ( !/undefined|function/.test( typeof(tmpContent[o]) ) ) {
                                 value = JSON.stringify(tmpContent[o]).match(re);
-                                if ( value.length > 0) {
+                                if ( value && value.length > 0) {
                                     value = value[1].split(/:/)[1];
                                     if ( /(<|>|=)/.test(filter[f]) ) {
-                                        if ( eval( value + filter[f] ) ) {
-                                            //result[i] = tmpContent[o];
-                                            //++i
+
+                                        // looking for a datetime ?
+                                        if (
+                                            /(\d{4})\-(\d{2})\-(\d{2})(\s+|T)(\d{2}):(\d{2}):(\d{2})/.test( value )
+                                            && /(\d{4})\-(\d{2})\-(\d{2})(\s+|T)(\d{2}):(\d{2}):(\d{2})/.test( filter[f] )
+                                        ) {
+
+                                            if ( eval( value.replace(/(\d{4})\-(\d{2})\-(\d{2})(\s+|T)(\d{2}):(\d{2}):(\d{2})/, 'new Date("$&")') + filter[f].replace(/(\d{4})\-(\d{2})\-(\d{2})(\s+|T)(\d{2}):(\d{2}):(\d{2})/, 'new Date("$&")') ) ) {
+                                                tmpContent[o].matched[f] = true;
+                                                resultObj[ tmpContent[o]._uuid ] = tmpContent[o]
+                                            }
+
+                                        } else if ( eval( value + filter[f] ) ) {
+
                                             tmpContent[o].matched[f] = true;
                                             resultObj[ tmpContent[o]._uuid ] = tmpContent[o]
                                         }
                                     } else {
                                         if (value == filter[f]) {
-                                            //result[i] = tmpContent[o];
-                                            //++i
+
                                             tmpContent[o].matched[f] = true;
                                             resultObj[ tmpContent[o]._uuid ] = tmpContent[o]
                                         }
@@ -127,35 +149,45 @@ function Collection(content, option) {
                             }
 
 
-                        } else {
-                            // normal case
-                            if ( filter[f] && keywords.indexOf(localeLowerCase) > -1 && localeLowerCase == 'not null' && typeof(tmpContent[o][f]) != 'undefined' && typeof(tmpContent[o][f]) !== 'object' && tmpContent[o][f] != 'null' && tmpContent[o][f] != 'undefined' ) {
-                                if (result.indexOf(tmpContent[o][f]) < 0 ) {
-                                    //result[i] = tmpContent[o][f];
-                                    //++i
-                                    tmpContent[o].matched[f] = true;
-                                    if (typeof(tmpContent[o][f]) == 'object' ) {
-                                        resultObj[ tmpContent[o][f]._uuid ] = tmpContent[o][f]
-                                    } else {
-                                        if ( !resultObj[o] ) {
-                                            resultObj[o] = {}
-                                        }
+                        } else { // normal case
 
-                                        resultObj[tmpContent[o]._uuid] = tmpContent[o];
+                            if ( filter[f] === null && tmpContent[o][f] === null ) { // null case
+
+                                tmpContent[o].matched[f] = true;
+                                resultObj[ tmpContent[o]._uuid ] = tmpContent[o]
+
+                            } else if ( filter[f] && keywords.indexOf(localeLowerCase) > -1 && localeLowerCase == 'not null' && typeof(tmpContent[o][f]) != 'undefined' && typeof(tmpContent[o][f]) !== 'object' && tmpContent[o][f] != 'null' && tmpContent[o][f] != 'undefined' ) {
+                                if (result.indexOf(tmpContent[o][f]) < 0 ) {
+                                    tmpContent[o].matched[f] = true;
+                                    //if (typeof(tmpContent[o][f]) == 'object' ) {
+                                    //    resultObj[ tmpContent[o][f]._uuid ] = tmpContent[o][f]
+                                    //} else {
+                                    if ( !resultObj[o] ) {
+                                        resultObj[o] = {}
                                     }
+
+                                    resultObj[tmpContent[o]._uuid] = tmpContent[o];
+                                    //}
                                 }
 
                             } else if ( typeof(tmpContent[o][f]) != 'undefined' && typeof(tmpContent[o][f]) !== 'object' && /(<|>|=)/.test(filter[f]) && !/undefined|function/.test( typeof(tmpContent[o][f]) ) ) { // with operations
-                                if ( eval( tmpContent[o][f] + filter[f] ) ) {
-                                    //result[i] = tmpContent[o];
-                                    //++i
+                                // looking for a datetime ?
+                                if (
+                                    /(\d{4})\-(\d{2})\-(\d{2})(\s+|T)(\d{2}):(\d{2}):(\d{2})/.test( tmpContent[o][f] )
+                                    && /(\d{4})\-(\d{2})\-(\d{2})(\s+|T)(\d{2}):(\d{2}):(\d{2})/.test( filter[f] )
+                                ) {
+
+                                    if ( eval( tmpContent[o][f].replace(/(\d{4})\-(\d{2})\-(\d{2})(\s+|T)(\d{2}):(\d{2}):(\d{2})/, 'new Date("$&")') + filter[f].replace(/(\d{4})\-(\d{2})\-(\d{2})(\s+|T)(\d{2}):(\d{2}):(\d{2})/, 'new Date("$&")') ) ) {
+                                        tmpContent[o].matched[f] = true;
+                                        resultObj[ tmpContent[o]._uuid ] = tmpContent[o]
+                                    }
+
+                                } else if ( eval( tmpContent[o][f] + filter[f] ) ) {
                                     tmpContent[o].matched[f] = true;
                                     resultObj[ tmpContent[o]._uuid ] = tmpContent[o]
                                 }
                             } else if ( typeof(tmpContent[o][f]) != 'undefined' && typeof(tmpContent[o][f]) !== 'object' && tmpContent[o][f] === filter[f] ) {
 
-                                //result[i] = tmpContent[o];
-                                //++i
                                 tmpContent[o].matched[f] = true;
                                 resultObj[ tmpContent[o]._uuid ] = tmpContent[o]
                             }
@@ -171,10 +203,15 @@ function Collection(content, option) {
 
         if (withOrClause) {
             for (var obj in resultObj) {
-                delete resultObj[obj].matched;
-                result[i] = resultObj[obj];
-                ++i
+                if ( typeof(resultObj[obj].matched) != 'undefined' && resultObj[obj].matched.count() == condition ) {
+                    delete resultObj[obj].matched;
+                    result[i] = resultObj[obj];
+                    ++i
+                }
             }
+
+            // merging with previous result (this)
+            result  = merge(this, result, true)
         } else {
             var matched = 0;
             for (var obj in resultObj) {
@@ -186,10 +223,11 @@ function Collection(content, option) {
             }
         }
 
-
-
         // chaining
         result.notIn    = instance.notIn;
+        result.find     = instance.find;
+        result.update   = instance.update;
+        result.or       = instance.or;
         result.findOne  = instance.findOne;
         result.limit    = instance.limit;
         result.orderBy  = instance.orderBy;
@@ -215,6 +253,8 @@ function Collection(content, option) {
         result = result.splice(0, resultLimit);
 
         // chaining
+        result.update   = instance.update;
+        result.replace  = instance.replace;
         result.notIn    = instance.notIn;
         result.findOne  = instance.findOne;
         result.orderBy  = instance.orderBy;
@@ -248,37 +288,54 @@ function Collection(content, option) {
                     } else if ( typeof(tmpContent[o][f]) != 'undefined' && typeof(tmpContent[o][f]) !== 'object' && tmpContent[o][f] === filter[f] ) {
                         ++i;
                         if (i === condition) result = tmpContent[o]
+                    } else if ( filter[f] === null && tmpContent[o][f] === null ) { // null case
+                        ++i;
+                        if (i === condition) result = tmpContent[o]
                     }
                 }
             }
         }
 
 
-        return result
+        return ( Array.isArray(result) && !result.length ) ? null : result
     }
 
 
 
     this['notIn'] =  function(collection){
 
+        // where `this` is the source & `collection` is the target to be compared with
+
         if ( typeof(collection) == 'undefined' )
             return Array.isArray(this) ? this : content;
 
+        if (!Array.isArray(this))
+            throw new Error('<source>.notIn(<target>): `<source>` must be a valid `CollectionResultSet` (Array)');
+
+        if (!Array.isArray(collection))
+            throw new Error('<source>.notIn(<target>): `<target>` must be a valid CollectionResultSet (Array)');
+
+        if (this.length == 0)
+            return collection;
+
         var result          = []
             , r             = 0
-            , tmpUuids      = JSON.parse(JSON.stringify(instance.uuids))
-            , tmpContent    = Array.isArray(this) ? this : content;
+            , source        = JSON.parse(JSON.stringify(this))
+            , target        = JSON.parse(JSON.stringify(collection));
 
-
-        for (var i = 0, len = collection.length; i < len; ++i) {
-            if ( typeof(tmpUuids[ collection[i]._uuid ]) != 'undefined' )  {
-                delete tmpUuids[ collection[i]._uuid ]
+        // removing those not in collection
+        for (var i = 0, len = target.length; i < len; ++i) {
+            for (var s = 0, sLen = source.length; s < sLen; ++s) {
+                if (target[i]._uuid == source[s]._uuid) {
+                    target.splice(i, 1);
+                    source.splice(s, 1);
+                    --i;
+                    break
+                }
             }
         }
-        for (var uuid in tmpUuids) {
-            result[r] = tmpUuids[uuid];
-            ++r;
-        }
+
+        result = target;
 
         result.limit    = instance.limit;
         result.find     = instance.find;
@@ -288,23 +345,92 @@ function Collection(content, option) {
         return result
     }
 
+    this['insert'] = function (set) {
+
+        if ( typeof(set) !== 'object' ) {
+            throw new Error('filter must be an object');
+        } else {
+
+
+            content.push(set);
+
+            var index = content.length-1;
+            content[ index ]._uuid = uuid.v4();
+            instance['uuids'][ content[index]._uuid ] = content[index];
+
+            var result = Array.isArray(this) ? this : JSON.parse(JSON.stringify(content));
+        }
+
+        // chaining
+        result.find     = instance.find;
+        result.findOne  = instance.findOne;
+        result.orderBy  = instance.orderBy;
+        result.notIn    = instance.notIn;
+
+        return result
+    }
+
     this['update'] = function(filter, set) {
         if ( typeof(filter) !== 'object' ) {
             throw new Error('filter must be an object');
         } else {
             var condition           = filter.count()
+                , i                 = 0
                 , localeLowerCase   = ''
                 , result            = Array.isArray(this) ? this : JSON.parse(JSON.stringify(content));
 
-            for (var o in content) {
+            for (var o in result) {
                 for (var f in filter) {
                     if ( typeof(filter[f]) == 'undefined' ) throw new Error('filter `'+f+'` cannot be left undefined');
 
                     localeLowerCase = ( typeof(filter[f]) != 'boolean' ) ? filter[f].toLocaleLowerCase() : filter[f];
-                    if ( filter[f] && keywords.indexOf(localeLowerCase) > -1 && localeLowerCase == 'not null' && typeof(content[o][f]) != 'undefined' && typeof(content[o][f]) !== 'object' && content[o][f] != 'null' && content[o][f] != 'undefined' ) {
-                        result[o][f] = set;
+                    if ( filter[f] && keywords.indexOf(localeLowerCase) > -1 && localeLowerCase == 'not null' && typeof(result[o][f]) != 'undefined' && typeof(result[o][f]) !== 'object' && result[o][f] != 'null' && result[o][f] != 'undefined' ) {
 
-                    } else if ( typeof(content[o][f]) != 'undefined' && typeof(content[o][f]) !== 'object' && content[o][f] === filter[f] ) {
+                        result[o] = merge(result[o], set, true);
+
+                    } else if ( typeof(result[o][f]) != 'undefined' && typeof(result[o][f]) !== 'object' && result[o][f] === filter[f] ) {
+                        ++i;
+                        if (i === condition) result[o] = merge(result[o], set, true);
+                    } else if ( typeof(result[o][f]) != 'undefined' && typeof(result[o][f]) !== 'object' && result[o][f] === filter[f]) {
+
+                        result[o] = merge(result[o], set, true);
+                    }
+                }
+            }
+        }
+
+        // chaining
+        result.find     = instance.find;
+        result.findOne  = instance.findOne;
+        result.orderBy  = instance.orderBy;
+        result.notIn    = instance.notIn;
+
+        return result
+    }
+
+    this['replace'] = function(filter, set) {
+        if ( typeof(filter) !== 'object' ) {
+            throw new Error('filter must be an object');
+        } else {
+            var condition           = filter.count()
+                , i                 = 0
+                , localeLowerCase   = ''
+                , result            = Array.isArray(this) ? this : JSON.parse(JSON.stringify(content));
+
+            for (var o in result) {
+                for (var f in filter) {
+                    if ( typeof(filter[f]) == 'undefined' ) throw new Error('filter `'+f+'` cannot be left undefined');
+
+                    localeLowerCase = ( typeof(filter[f]) != 'boolean' ) ? filter[f].toLocaleLowerCase() : filter[f];
+                    if ( filter[f] && keywords.indexOf(localeLowerCase) > -1 && localeLowerCase == 'not null' && typeof(result[o][f]) != 'undefined' && typeof(result[o][f]) !== 'object' && result[o][f] != 'null' && result[o][f] != 'undefined' ) {
+
+                        result[o] = set;
+
+                    } else if ( typeof(result[o][f]) != 'undefined' && typeof(result[o][f]) !== 'object' && result[o][f] === filter[f] ) {
+                        ++i;
+                        if (i === condition) result[o] = set;
+                    } else if ( typeof(result[o][f]) != 'undefined' && typeof(result[o][f]) !== 'object' && result[o][f] === filter[f]) {
+
                         result[o] = set;
                     }
                 }
@@ -325,24 +451,29 @@ function Collection(content, option) {
             throw new Error('filter must be an object');
         } else {
             var condition           = filter.count()
+                , i                 = 0
                 , localeLowerCase   = ''
-                , result            = Array.isArray(this) ? JSON.parse(JSON.stringify(this)) : JSON.parse(JSON.stringify(content));
+                , _content          = Array.isArray(this) ? JSON.parse(JSON.stringify(this)) : JSON.parse(JSON.stringify(content))
+                , result            = JSON.parse(JSON.stringify(_content));
 
-            for (var o in content) {
+            for (var o in _content) {
                 for (var f in filter) {
                     if ( typeof(filter[f]) == 'undefined' ) throw new Error('filter `'+f+'` cannot be left undefined');
 
                     localeLowerCase = ( typeof(filter[f]) != 'boolean' ) ? filter[f].toLocaleLowerCase() : filter[f];
-                    if ( filter[f] && keywords.indexOf(localeLowerCase) > -1 && localeLowerCase == 'not null' && typeof(content[o][f]) != 'undefined' && typeof(content[o][f]) !== 'object' && content[o][f] != 'null' && content[o][f] != 'undefined' ) {
-                        //delete result[o][f];
+                    if ( filter[f] && keywords.indexOf(localeLowerCase) > -1 && localeLowerCase == 'not null' && typeof(_content[o][f]) != 'undefined' && typeof(_content[o][f]) !== 'object' && _content[o][f] != 'null' && _content[o][f] != 'undefined' ) {
                         result.splice(o, 1)
-                    } else if ( typeof(content[o][f]) != 'undefined' && typeof(content[o][f]) !== 'object' && content[o][f] === filter[f] ) {
+                    } else if ( typeof(_content[o][f]) != 'undefined' && typeof(_content[o][f]) !== 'object' && _content[o][f] === filter[f] ) {
+                        ++i;
+                        if (i === condition) result.splice(o, 1);
+                    } else if ( typeof(_content[o][f]) != 'undefined' && typeof(_content[o][f]) !== 'object' && _content[o][f] === filter[f] ) {
                         result.splice(o, 1)
                     }
                 }
             }
         }
 
+        //content = result;
         return result
     }
 
@@ -416,9 +547,35 @@ function Collection(content, option) {
 
                     return a.localeCompare(b)
 
+                } else if ( typeof(a) == 'boolean' || typeof(b) == 'boolean' ) {
+
+                    if (typeof(a) == 'boolean' ) {
+                        a = (a) ? 1: 0;
+                    }
+                    if (typeof(b) == 'boolean' ) {
+                        b = (b) ? 1: 0;
+                    }
+
+                    if (a > b) {
+                        return 1;
+                    }
+                    if (a < b) {
+                        return -1;
+                    }
+
+                    // a must be equal to b
+                    return 0;
+
                 } else if ( typeof(a) == 'object' ) {
                     try {
-                        return a[prop].localeCompare(b[prop])
+                        if ( typeof(a[prop]) == 'number' ) {
+
+                            a[prop] = '' + a[prop];
+                            b[prop] = '' + b[prop];
+                        }
+
+                        return a[prop].localeCompare(b[prop], { numeric: true})
+
                     } catch (err) {
                         return -1
                     }
@@ -475,6 +632,9 @@ function Collection(content, option) {
         result.findOne  = instance.findOne;
         result.limit    = instance.limit;
         result.notIn    = instance.notIn;
+        result.update   = instance.update;
+        result.replace  = instance.replace;
+        result.delete   = instance.delete;
 
         return result
     };

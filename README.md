@@ -1,10 +1,16 @@
-# Gina
-<strong>Gina I/O</strong> - Node.js MVC and Event Driven framework
+ Gina![Gina I/O](https://raw.githubusercontent.com/Rhinostone/gina/master/core/asset/img/favicon-16x16.png)   
+
+>  Gina was designed to be accessible, flexible, scalable and maintainable. Our main purpose was to allow developpers to create easier and faster web applications.
+>  
+> Essential features are available at this moment, but most of the things we don't have yet can be replaced by some alternatives written in other languages like: Ruby, PHP, .net, Python or C++. You are free to use such alternatives until we implement similar features.   
 
 
-Node.js(100%)
 
-__Gina is compatible with the following versions of Node.js:__
+## Compatibility
+
+__Gina works fine with the following versions of Node.js:__
+- `v8.x.x`,
+- `v7.x.x`,
 - `v6.x.x` (Between Node.js 5.x and 6.3, NPM is broken, use manual installation: by cloning),
 - `v5.x.x` (Between Node.js 5.x and 6.3, NPM is broken, use manual installation: by cloning),
 - `v4.x.x`,
@@ -12,11 +18,6 @@ __Gina is compatible with the following versions of Node.js:__
 - `v0.11.x`,
 - `v0.10.x`
 
-## Philosophy behind
-
-Gina was designed to be accessible, flexible, scalable and maintainable. Our main purpose was to allow developpers to create easier and faster web applications.
-
-Gina comes with essential features at this moment, but most of the things we don't have yet can be replaced by some alternatives written in other languages like: Ruby, PHP, .net, Python or C++. You are free to use such alternatives until we implement similar features.
 
 ## Getting started with Gina I/O
 
@@ -104,7 +105,7 @@ Now edit the `init` action in `src/frontend/controllers/controller.js` so that y
 
 Once it's done, you just need to refresh your browser.
 
-Gina is shipped with [Swig](http://paularmstrong.github.io/swig/docs/api/) as the default template engine. If you are more comfortable with another template engine, you can use your own.
+Gina is shipped with [Swig](http://node-swig.github.io/swig-templates/docs/) as the default template engine. If you are more comfortable with another template engine, you can use your own.
 
 ## Debugging in Gina
 
@@ -125,8 +126,13 @@ You can attach a remote debuger like [Visual Studio Code](https://code.visualstu
 ![New conf](./documentation/img/debug-conf6.png)   
 
 6. Save, and go back to your terminal to start your bundle with the debug argument:
+Before Node.js `v8.x.x`
 ```tty 
 $ ./gina.sh -s frontend dev --debug-brk=5959
+```
+After Node.js `v8.x.x`
+```tty 
+$ ./gina.sh -s frontend dev --inspect-brk=5959
 ```
 > Gina will be waiting for you to launch the remote debugger.
 

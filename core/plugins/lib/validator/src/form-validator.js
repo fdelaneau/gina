@@ -23,12 +23,13 @@ function FormValidatorUtil(data, $fields) {
     var local = {
         'errors': {},
         'keys': {
-            '%l': 'label', // %l => label: needs `data-label` attribute (frontend only)
+            '%l': 'label', // %l => label: needs `data-gina-form-field-label` attribute (frontend only)
             '%n': 'name', // %n => field name
             '%s': 'size' // %s => length
         },
         'errorLabels': {},
-        'data': {} // output to send
+        'data': {}, // output to send
+        'excluded': []
     };
 
     local.errorLabels = {
@@ -36,7 +37,7 @@ function FormValidatorUtil(data, $fields) {
         'isEmail': 'A valid email is required',
         'isRequired': 'Cannot be left empty',
         'isBoolean': 'Must be a valid boolean',
-        'isNumber': 'Must be a number',
+        'isNumber': 'Must be a number: allowed values are integers or floats',
         'isNumberLength': 'Must contain %s characters',
         'isNumberMinLength': 'Should be at least %s characters',
         'isNumberMaxLength': 'Should not be more than %s characters',
@@ -80,7 +81,7 @@ function FormValidatorUtil(data, $fields) {
 
         label = '';
         if ( isGFFCtx && typeof($fields) != 'undefined' ) { // frontend only
-            label = $fields[el].getAttribute('data-label') || '';
+            label = $fields[el].getAttribute('data-gina-form-field-label') || '';
         }
 
         // keys are stringyfied because of the compiler !!!
@@ -103,19 +104,52 @@ function FormValidatorUtil(data, $fields) {
          *
          *  e.g.:
          *       "/\\D+/"       -> like [^0-9]
+         *       "!/^\\\\s+/"   -> not starting by white space allow
          *       "/^[0-9]+$/"   -> only numbers
+         *       "$field === $fieldOther"   -> will be evaluated
          *
          * @param {object|string} condition - RegExp object, or condition to eval, or eval result
+         * @param {string} [errorMessage] - error message
+         * @param {string} [errorStack] - error stack
          *
          * */
-        self[el]['is'] = function(condition, errorLabel) {
+        self[el]['is'] = function(condition, errorMessage, errorStack) {
             var valid   = false;
             var errors  = {};
 
-            if ( condition instanceof RegExp ) {
+            if ( /\$[-_\[\]a-z 0-9]+|^!\//i.test(condition) ) {
+
+                var variables = condition.match(/\${0}[-_\[\]a-z0-9]+/ig); // without space(s)
+                var compiledCondition = condition;
+                var re = null
+                for (var i = 0, len = variables.length; i < len; ++i) {
+                    if ( typeof(self[ variables[i] ]) != 'undefined' && variables[i]) {
+                        re = new RegExp("\\$"+ variables[i] +"(?!\\S+)", "g");
+                        if ( self[ variables[i] ].value == "" ) {
+                            compiledCondition = compiledCondition.replace(re, '"');
+                        } else if ( typeof(self[ variables[i] ].value) == 'string' ) {
+                            compiledCondition = compiledCondition.replace(re, '"'+ self[ variables[i] ].value +'"');
+                        } else {
+                            compiledCondition = compiledCondition.replace(re, self[ variables[i] ].value);
+                        }
+                    }
+                }
+
+                try {
+                    // security checks
+                    compiledCondition = compiledCondition.replace(/(\(|\)|return)/g, '');
+                    valid = eval(compiledCondition+'.test("'+ this.value +'")')
+                } catch (err) {
+                    throw new Error(err.stack||err.message)
+                }
+            } else if ( condition instanceof RegExp ) {
+
                 valid = condition.test(this.value) ? true : false;
+
             } else if( typeof(condition) == 'boolean') {
+
                 valid = (condition) ? true : false;
+
             } else {
                 try {
                     // TODO - motif /gi to pass to the second argument
@@ -126,7 +160,9 @@ function FormValidatorUtil(data, $fields) {
             }
 
             if (!valid) {
-                errors['is'] = replace(this.error || errorLabel || local.errorLabels['is'], this)
+                errors['is'] = replace(this.error || errorMessage || local.errorLabels['is'], this);
+                if ( typeof(errorStack) != 'undefined' )
+                    errors['stack'] = errorStack;
             }
 
             this.valid = valid;
@@ -163,9 +199,19 @@ function FormValidatorUtil(data, $fields) {
 
         /**
          * Check if boolean and convert to `true/false` booloean if value is a string or a number
+         * Will include `false` value if isRequired
          * */
         self[el]['isBoolean'] = function() {
-            var val = null, errors = {};
+            var val     = null
+                , errors = self[this['name']]['errors'] || {}
+            ;
+
+            if ( errors['isRequired'] && this.value == false ) {
+                isValid = true;
+                delete errors['isRequired'];
+                this['errors'] = errors;
+            }
+
             switch(this.value) {
                 case 'true':
                 case true:
@@ -192,29 +238,52 @@ function FormValidatorUtil(data, $fields) {
         }
 
         /**
-         * Check if value is an a Number. No transformation is done here.
+         * Check if value is an a Number.
+         *  - valid if a number is found
+         *  - cast into a number if a string is found
+         *  - if string is blank, no transformation will be done: valid if not required
+         *
+         *  @param {number} minLength
+         *  @param {number} maxLength
+         *
+         *  @return {object} result
          * */
         self[el]['isNumber'] = function(minLength, maxLength) {
             var val             = this.value
+                , len           = 0
                 , isValid       = false
                 , isMinLength   = true
                 , isMaxLength   = true
                 , errors        = {}
                 ;
-            // if val is a string replaces comas by points
-            if (typeof(val) == 'string' && /,/g.test(val)) {
-                val = this.value = val.replace(/,/g, '.').replace(/\s+/g, '');
-            }
+
+
             // test if val is a number
+            try {
+                // if val is a string replaces comas by points
+                if ( typeof(val) == 'string' && /,/g.test(val) ) {
+                    val = this.value = parseFloat( val.replace(/,/g, '.').replace(/\s+/g, '') );
+                } else if ( typeof(val) == 'string' && val != '') {
+                    val = this.value = parseInt( val );
+                }
+
+            } catch (err) {
+                errors['isNumber'] = replace(this.error || local.errorLabels['isNumber'], this);
+                this.valid = false;
+                if ( errors.count() > 0 )
+                    this['errors'] = errors;
+            }
+
             if ( +val === +val ) {
                 isValid = true;
                 if ( !errors['isRequired'] && val != '' ) {
+                    len = val.toString().length;
                     // if so also test max and min length if defined
-                    if (minLength && typeof(minLength) == 'number' && val.length < minLength) {
+                    if (minLength && typeof(minLength) == 'number' && len < minLength) {
                         isMinLength = false;
                         this['size'] = minLength;
                     }
-                    if (maxLength && typeof(maxLength) == 'number' && val.length > maxLength) {
+                    if (maxLength && typeof(maxLength) == 'number' && len > maxLength) {
                         isMaxLength = false;
                         this['size'] = maxLength;
                     }
@@ -239,7 +308,7 @@ function FormValidatorUtil(data, $fields) {
             }
 
             this.valid = isValid;
-            val = this.value = local.data[this.name] = Number(val);
+            val = this.value = local.data[this.name] = ( val != '' ) ? Number(val) : val;
             if ( errors.count() > 0 )
                 this['errors'] = errors;
 
@@ -253,7 +322,8 @@ function FormValidatorUtil(data, $fields) {
                 return self[this.name]
             } else {
                 try {
-                    val = this.value = local.data[this.name] = ~~(val.match(/[0-9]+/g).join(''));
+                    //val = this.value = local.data[this.name] = ~~(val.match(/[0-9]+/g).join(''));
+                    val = this.value = local.data[this.name] = Math.round(val);
                 } catch (err) {
 
                     errors['toInteger'] = replace(this.error || local.errorLabels['toInteger'], this);
@@ -295,15 +365,24 @@ function FormValidatorUtil(data, $fields) {
 
                 if ( !isValid )
                     errors['isInteger'] = replace(this.error || local.errorLabels['isInteger'], this);
+
                 if ( !isMinLength || !isMaxLength ) {
-                    if ( !isMinLength )
+
+                    if ( !isMinLength ) {
                         errors['isIntegerLength'] = replace(this.error || local.errorLabels['isIntegerMinLength'], this);
-                    if ( !isMaxLength )
+                        isValid = false;
+                    }
+
+                    if ( !isMaxLength ) {
                         errors['isIntegerLength'] = replace(this.error || local.errorLabels['isIntegerMaxLength'], this);
-                    if ( minLength === maxLength )
+                        isValid = false;
+                    }
+
+                    if ( minLength === maxLength ) {
                         errors['isIntegerLength'] = replace(this.error || local.errorLabels['isIntegerLength'], this);
+                        isValid = false;
+                    }
                 }
-                isValid = false;
             }
 
             this.valid = isValid;
@@ -334,7 +413,11 @@ function FormValidatorUtil(data, $fields) {
             } else {
                 if ( this['isNumber']().valid ) {
                     try {
-                        val = this.value = local.data[this.name] = new Number(parseFloat(val.match(/[0-9.,]+/g).join('').replace(/,/, '.')));// Number <> number
+
+                        if ( !Number.isFinite(val) ) {
+                            val = this.value = local.data[this.name] = new Number(parseFloat(val.match(/[0-9.,]+/g).join('').replace(/,/, '.')));// Number <> number
+                        }
+
                         this.target.setAttribute('value', val);
                     } catch(err) {
                         isValid = false;
@@ -350,7 +433,7 @@ function FormValidatorUtil(data, $fields) {
             }
 
             if (this['decimals'] && val && !errors['toFloat']) {
-                this.value = local.data[this.name] = this.value.toFixed(this['decimals']);
+                this.value = local.data[this.name] = parseFloat(this.value.toFixed(this['decimals']));
             }
 
             this.valid = isValid;
@@ -378,10 +461,12 @@ function FormValidatorUtil(data, $fields) {
                 this.value = this.value.replace(/\s+/g, '');
             }
 
-            var val = this.value, isValid = false, errors = {};
+            var val         = this.value
+                , isValid   = false
+                , errors    = {};
 
 
-            if ( typeof(val) == 'string' && /\./.test(val) && Number(val) ) {
+            if ( typeof(val) == 'string' && /\./.test(val) && Number.isFinite( Number(val) ) ) {
                 isValid = true
             }
 
@@ -389,8 +474,9 @@ function FormValidatorUtil(data, $fields) {
             if (typeof(val) == 'string' && /,/g.test(val)) {
                 val =  this.value = local.data[this.name] = Number(val.replace(/,/g, '.'))
             }
-            // test if val can be a number and if it is a float
-            if ( val && val % 1 !== 0 || val == 0) {
+
+            // test if val is strictly a float
+            if ( Number(val) === val && val % 1 !== 0 ) {
                 this.value = local.data[this.name] = Number(val);
                 isValid = true
             } else {
@@ -421,9 +507,25 @@ function FormValidatorUtil(data, $fields) {
                 return self[this.name]
             }
 
+            // radio group case
+            if ( isGFFCtx && this.target.tagName == 'INPUT' && typeof(this.target.type) != 'undefined' && this.target.type == 'radio' ) {
+                var radios = document.getElementsByName(this.name);
+                for (var i = 0, len = radios.length; i < len; ++i) {
+                    if (radios[i].checked) {
+                        if ( /true|false/.test(radios[i].value) ) {
+                            this.value = local.data[this.name] = ( /true/.test(radios[i].value) ) ? true : false
+                        } else {
+                            this.value = local.data[this.name] = radios[i].value;
+                        }
+
+                        this.valid = true;
+                        break;
+                    }
+                }
+            }
 
 
-            var isValid = ( typeof(this.value) != 'undefined' && this.value != null && this.value != '') ? true : false;
+            var isValid = ( typeof(this.value) != 'undefined' && this.value != null && this.value != '' && !/^\s+/.test(this.value) ) ? true : false;
             var errors  = {};
 
 
@@ -608,16 +710,8 @@ function FormValidatorUtil(data, $fields) {
                 return self[this.name]
             }
 
-            //clonning
-            for (var d in local.data) {
-                if (d === this.name) { //cleaning
-                    delete local.data[d]
-                }
-            }
-            //console.log('deleting ', this.name, local.data);
-            //delete local.data[this.name];
-
-            return self[this.name]
+            // list field to be purged
+            local.excluded.push(this.name);
         }
 
     } // EO for (var el in self)
@@ -634,7 +728,6 @@ function FormValidatorUtil(data, $fields) {
 
         if (i > 0) {
             valid = false;
-            //console.log('('+i+')ERROR'+( (i>1) ? 's': '')+' :\n'+ self['getErrors']() );
         }
 
         return valid
@@ -645,7 +738,8 @@ function FormValidatorUtil(data, $fields) {
 
         for (var field in self) {
             if ( typeof(self[field]) != 'function' && typeof(self[field]['errors']) != 'undefined' ) {
-                errors[field] = self[field]['errors']
+                if ( self[field]['errors'].count() > 0)
+                    errors[field] = self[field]['errors'];
             }
         }
 
@@ -653,6 +747,16 @@ function FormValidatorUtil(data, $fields) {
     }
 
     self['toData'] = function() {
+
+        // cleaning data
+        if (local.excluded.length > 0) {
+            for (var i = 0, len = local.excluded.length; i < len; ++i) {
+                if ( typeof(local.data[ local.excluded[i] ]) != 'undefined' ) {
+                    delete local.data[ local.excluded[i] ]
+                }
+            }
+        }
+
         return local.data
     }
 

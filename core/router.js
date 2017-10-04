@@ -158,6 +158,22 @@ function Router(env) {
 
         if (!_param.length) return false;
 
+        //  if custom path, path rewrite
+        if (request.routing.param.path) {
+            regex = new RegExp(urlVar, 'g')
+            if ( regex.test(request.routing.param.path) ) {
+                request.routing.param.path = request.routing.param.path.replace(regex, urlVal);
+            }
+        }
+
+        //  if custom file, file rewrite
+        if (request.routing.param.file) {
+            regex = new RegExp(urlVar, 'g')
+            if ( regex.test(request.routing.param.file) ) {
+                request.routing.param.file = request.routing.param.file.replace(regex, urlVal);
+            }
+        }
+
         if (_param.length == 1) {// fast one
             matched =  ( _param.indexOf(urlVar) > -1 ) ? _param.indexOf(urlVar) : false;
 
@@ -337,7 +353,8 @@ function Router(env) {
             response        : response,
             next            : next,
             hasViews        : ( typeof(conf.content.views) != 'undefined' ) ? true : false,
-            isUsingTemplate : conf.template
+            isUsingTemplate : conf.template,
+            isProcessingXMLRequest : params.isXMLRequest
         };
 
         setContext('router', routerObj);
@@ -413,7 +430,9 @@ function Router(env) {
             isUsingTemplate : local.isUsingTemplate,
             cacheless       : cacheless,
             rule            : params.rule,
-            isXMLRequest    : params.isXMLRequest
+            path            : params.param.path || null, // user custom path : namespace should be ignored | left blank
+            isXMLRequest    : params.isXMLRequest,
+            withCredentials : false
         };
 
         for (var p in params.param) {
@@ -464,6 +483,7 @@ function Router(env) {
                             // exporting config & common methods
                             Setup.engine                = controller.engine;
                             Setup.getConfig             = controller.getConfig;
+                            Setup.getLocales            = controller.getLocales;
                             Setup.getFormsRules         = controller.getFormsRules;
                             Setup.throwError            = controller.throwError;
                             Setup.redirect              = controller.redirect;
@@ -471,6 +491,7 @@ function Router(env) {
                             Setup.renderJSON            = controller.renderJSON;
                             Setup.renderWithoutLayout   = controller.renderWithoutLayout
                             Setup.isXMLRequest          = controller.isXMLRequest;
+                            Setup.isWithCredentials     = controller.isWithCredentials,
                             Setup.isCacheless           = controller.isCacheless;
 
                             Setup.apply(Setup, arguments);
@@ -478,6 +499,58 @@ function Router(env) {
                             return Setup;
                         }(request, response, next)
                     }
+                }
+            }
+
+            // allowing another controller (public methods) to be required inside the current controller
+            /**
+             * requireController
+             * Allowing another controller (public methods) to be required inside the current controller
+             *
+             * @param {string} namespace - Controller namespace
+             * @param {object} [options] - Controller options
+             *
+             * @return {object} controllerInstance
+             * */
+            controller.requireController = function (namespace, options) {
+
+                var cacheless   = (process.env.IS_CACHELESS == 'false') ? false : true;
+                var corePath    = getPath('gina').core;
+                var config      = getContext('gina').Config.instance;
+                var bundle      = config.bundle;
+                var env         = config.env;
+                var bundleConf  = config.Env.getConf(bundle, env);
+
+                var filename    = _(bundleConf.bundlesPath +'/'+ bundle + '/controllers/' + namespace + '.js', true);
+
+                try {
+
+                    if (cacheless) {
+                        // Super controller
+                        delete require.cache[_(corePath +'/controller/index.js', true)];
+                        require.cache[_(corePath +'/controller/index.js', true)] = require( _(corePath +'/controller/index.js', true) );
+
+                        delete require.cache[filename];
+                    }
+
+                    var SuperController     = require.cache[_(corePath +'/controller/index.js', true)];
+                    var RequiredController  = require(filename);
+
+                    var RequiredController = inherits(RequiredController, SuperController)
+
+                    if ( typeof(options) != 'undefined' ) {
+
+                        var controller = new RequiredController( options );
+                        controller.setOptions(request, response, next, options);
+
+                        return controller
+
+                    } else {
+                        return new RequiredController();
+                    }
+
+                } catch (err) {
+                    throwError(response, 500, err );
                 }
             }
 
@@ -551,13 +624,15 @@ function Router(env) {
                         // exporting config & common methods
                         //Middleware.engine             = controller.engine;
                         Middleware.prototype.getConfig              = controller.getConfig;
-                        Middleware.prototype.getFormsRules           = controller.getFormsRules;
+                        Middleware.prototype.getLocales             = controller.getLocales;
+                        Middleware.prototype.getFormsRules          = controller.getFormsRules;
                         Middleware.prototype.throwError             = controller.throwError;
                         Middleware.prototype.redirect               = controller.redirect;
                         Middleware.prototype.render                 = controller.render;
                         Middleware.prototype.renderJSON             = controller.renderJSON;
                         Middleware.prototype.renderWithoutLayout    = controller.renderWithoutLayout
                         Middleware.prototype.isXMLRequest           = controller.isXMLRequest;
+                        Middleware.prototype.isWithCredentials      = controller.isWithCredentials;
                         Middleware.prototype.isCacheless            = controller.isCacheless;
 
                         return Middleware;
@@ -613,11 +688,19 @@ function Router(env) {
                     res.writeHead(code, { 'Content-Type': 'application/json'} )
                 }
 
-                console.error(res.req.method +' [ '+code+' ] '+ res.req.url);
-                res.end(JSON.stringify({
+                console.error(res.req.method +' [ '+code+' ] '+ res.req.url)
+
+                var e = {
                     status: code,
                     error: msg
-                }))
+                };
+
+                if ( typeof(msg) == 'object' && typeof(msg.stack) != 'undefined' ) {
+                    e.error.stack   = msg.stack;
+                    e.error.message = msg.message;
+                }
+
+                res.end(JSON.stringify(err))
             } else {
                 res.writeHead(code, { 'Content-Type': 'text/html'} );
                 console.error(res.req.method +' [ '+code+' ] '+ res.req.url);

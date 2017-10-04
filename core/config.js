@@ -452,11 +452,14 @@ function Config(opt) {
 
 
                 //Variables replace. Compare with gina/core/template/conf/env.json.
-                var version = undefined;
+                var version = undefined, middleware = undefined;
                 try {
-                    self.version = version = require(_(getPath('gina').root +'/package.json' )).version;
+                    self.version    = version = require(_(getPath('gina').root +'/package.json' )).version;
+                    self.middleware = middleware = fs.readFileSync(_(getPath('gina').root + '/MIDDLEWARE')).toString() || 'none';
 
-                    setContext('gina.version', version)
+                    setContext('gina.version', version);
+                    setContext('gina.middleware', middleware);
+
                 } catch (err) {
                     console.debug(err.stack)
                 }
@@ -481,7 +484,7 @@ function Config(opt) {
         }//EO for.
 
 
-        console.debug('Env configuration loaded \n ' + newContent);
+        console.debug('Env configuration loaded \n');
 
         // TRUE means that all apps sharing the same process will merge into one.
         if (!isStandalone) self.Host.standaloneMode = isStandalone;
@@ -1176,12 +1179,12 @@ function Config(opt) {
             self.envConf[bundle][env].content = {};
 
         self.envConf[bundle][env].content.routing = routing;
-        //Config.instance.envConf[bundle][env].content = self.envConf[bundle][env].content;
     }
 
     this.getRouting = function(bundle, env) {
-        return self.envConf[bundle][env].content.routing;
-        //Config.instance.envConf[bundle][env].content = self.envConf[bundle][env].content;
+        var routing = self.envConf[bundle][env].content.routing;
+
+        return routing;
     }
 
     this.setReverseRouting = function(bundle, env, reverseRouting) {

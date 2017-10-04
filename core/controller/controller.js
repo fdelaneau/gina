@@ -15,6 +15,7 @@ var utils           = require('./../utils') || require.cache[require.resolve('.
 var merge           = utils.merge;
 var inherits        = utils.inherits;
 var console         = utils.logger;
+var Collection      = utils.Collection;
 var swig            = require('swig');
 
 
@@ -41,11 +42,11 @@ function SuperController(options) {
         query   : {},
         _data   : {}
     };
+
     var ports = {
         'http': 80,
         'https': 443
     };
-
 
 
     /**
@@ -153,13 +154,23 @@ function SuperController(options) {
             }
 
             // new declaration && overrides
-            var content = action;
-            set('page.environment.version', getContext('gina').version);
+            var version = {
+                "number"        : getContext('gina').version,
+                "platform"      : process.platform,
+                "arch"          : process.arch,
+                "nodejs"        : process.versions.node,
+                "middleware"    : getContext('gina').middleware
+            };
+
+            set('page.environment.gina', version.number);
+            set('page.environment.nodejs', version.nodejs +' '+ version.platform +' '+ version.arch);
+            set('page.environment.middleware', version.middleware);
             set('page.environment.env', options.conf.env);
             set('page.environment.webroot', options.conf.server.webroot);
             set('page.environment.bundle', options.conf.bundle);
+
             set('page.ext', ext);
-            set('page.content', content);
+            set('page.content', action);
             set('page.namespace', namespace);
             set('page.title', rule.replace(new RegExp('@'+options.conf.bundle), ''));
             set('page.forms', options.conf.content.forms);
@@ -171,7 +182,30 @@ function SuperController(options) {
                 acceptLanguage = local.options.conf.server.response.header['accept-language']
             }
 
-            set('page.lang', acceptLanguage.split(',')[0]);
+            // set user locale
+            var userCulture     = acceptLanguage.split(',')[0];
+            var userCultureCode = userCulture.split(/\-/);
+            var userLangCode    = userCultureCode[0];
+            var userCountryCode = userCultureCode[1];
+
+            var locales         = new Collection( getContext('gina').locales );
+            var userLocales     = null;
+
+            try {
+                userLocales = locales.findOne({ lang: userLangCode }).content
+            } catch (err) {
+                console.warn('language code `'+ userLangCode +'` not handled to setup locales: replacing by `en`');
+                userLocales = locales.findOne({ lang: 'en' }).content // by default
+            }
+
+            // user locales list
+            local.options.conf.locales = userLocales;
+
+            // user locale
+            options.conf.locale = new Collection(userLocales).findOne({ short: userCountryCode });
+
+            set('page.locale', options.conf.locale);
+            set('page.lang', userCulture);
         }
 
         if ( hasViews() ) {
@@ -205,14 +239,17 @@ function SuperController(options) {
 
 
 
-    this.renderWithoutLayout = function (data) {
+    this.renderWithoutLayout = function (data, displayToolbar) {
         local.options.isWithoutLayout = true;
+        local.options.debugMode = true; // only active for dev env
         self.render(data)
     }
 
     /**
      * Render HTML templates : Swig is the default template engine
      *
+     *  Extend default filters
+     *  - length
      *
      * Avilable filters:
      *  - getWebroot()
@@ -238,9 +275,10 @@ function SuperController(options) {
             }
 
 
-            setResources(local.options.views, data.file);
-            var file = data.file;
+            data.view = local.options.rule.replace('\@'+ local.options.bundle, '');
+            setResources(local.options.views, data.view);
 
+            var file = data.file;
 
             // pre-compiling variables
             data = merge(data, getData()); // needed !!
@@ -253,15 +291,31 @@ function SuperController(options) {
                 self.throwError(data.page.data.status, data.page.data.error)
             }
 
+            // making path thru [namespace &] file
             if ( typeof(local.options.namespace) != 'undefined' ) {
                 file = ''+ file.replace(local.options.namespace+'-', '');
                 // means that rule name === namespace -> pointing to root namespace dir
                 if (!file || file === local.options.namespace) {
                     file = 'index'
                 }
-                path = _(local.options.views[data.file].html +'/'+ local.options.namespace + '/' + file)
+                path = _(local.options.views[data.view].html +'/'+ local.options.namespace + '/' + file)
             } else {
-                path = _(local.options.views[data.file].html +'/'+ file)
+                if (local.options.path) {
+                    path = _(local.options.path);
+                    var re = new RegExp( data.page.ext+'$');
+                    if ( data.page.ext && re.test(data.page.file) ) {
+                        data.page.path = path.replace('/'+ data.page.file, '');
+
+                        path            = path.replace(re, '');
+                        data.page.file  = data.page.file.replace(re, '');
+
+                    } else {
+                        data.page.path = path.replace('/'+ data.page.file, '');
+                    }
+
+                } else {
+                    path = _(local.options.views[data.view].html +'/'+ file)
+                }
             }
 
             if (data.page.ext) {
@@ -293,6 +347,17 @@ function SuperController(options) {
                 }
 
                 try {
+                    // Extends default `length` filter
+                    swig.setFilter('length', function (input, obj) {
+
+                        if ( typeof(input.count) != 'undefined' ) {
+                            return input.count()
+                        } else {
+                            return input.length
+                        }
+                    });
+
+
                     // Allows you to get a bundle web root
                     swig.setFilter('getWebroot', function (input, obj) {
                         var prop = options.envObj.getConf(obj, options.conf.env),
@@ -323,15 +388,16 @@ function SuperController(options) {
                      *
                      * @return {string} relativeUrl|absoluteUrl - /sample/url.html or http://domain.com/sample/url.html
                      * */
-                    var config          = null
-                        , hostname      = null
-                        , wroot         = null
-                        , isStandalone  = null
-                        , isMaster      = null
-                        , routing       = null
-                        , rule          = ''
-                        , url           = NaN
-                        , urlStr        = null
+                    var config              = null
+                        , hostname          = null
+                        , wroot             = null
+                        , isStandalone      = null
+                        , isMaster          = null
+                        , routing           = null
+                        , isWithoutLayout   = null
+                        , rule              = ''
+                        , url               = NaN
+                        , urlStr            = null
                     ;
 
 
@@ -345,9 +411,11 @@ function SuperController(options) {
                         config          = local.options.conf;
                         hostname        = '';
                         wroot           = config.server.webroot;
+
                         isStandalone    = (config.bundles.length > 1) ? true : false;
                         isMaster        = (config.bundles[0] === config.bundle) ? true : false;
                         routing         = config.content.routing;
+                        isWithoutLayout = (local.options.isWithoutLayout) ? true : false;
 
                         if ( typeof(base) != 'undefined' ) {
 
@@ -387,12 +455,8 @@ function SuperController(options) {
                             return hostname + wroot +'/'+ route;
                         }
 
-                        // deprecated: rules are now unique per bundle : rule@bundle
-                        //if ( isStandalone && !isMaster ) {
-                        //    rule = config.bundle +'-'+ route
-                        //} else {
-                            rule = route + '@' + config.bundle
-                        //}
+                        // rules are now unique per bundle : rule@bundle
+                        rule = route + '@' + config.bundle;
 
                         if ( typeof(routing[rule]) != 'undefined' ) { //found
                             url = routing[rule].url;
@@ -429,6 +493,12 @@ function SuperController(options) {
                                     }
                                 }
                             }
+
+                            if ( /^\//.test(url) )
+                                url = hostname + url;
+                            else
+                                url = hostname +'/'+ url;
+
                         } else {
                             if ( typeof(routing['404']) != 'undefined' && typeof(routing['404'].url) != 'undefined' ) {
                                 if (routing["404"].url.substr(0,1) == '/')
@@ -453,7 +523,7 @@ function SuperController(options) {
 
                 dic['page.content'] = content;
 
-                var layoutPath = (local.options.isWithoutLayout) ? local.options.views[data.file].noLayout : local.options.views[data.file].layout;
+                var layoutPath = (local.options.isWithoutLayout) ? local.options.views[data.view].noLayout : local.options.views[data.view].layout;
 
                 fs.readFile(layoutPath, function(err, layout) {
                     if (err) {
@@ -461,21 +531,21 @@ function SuperController(options) {
                     } else {
                         layout = layout.toString();
                         // adding plugins
-                        if ( hasViews() && local.options.conf.env == 'dev' && !local.options.isWithoutLayout ) {
-                            layout = ''
-                                + '{% set ginaDataInspector                = JSON.parse(JSON.stringify(page)) %}'
-                                + '{% set ginaDataInspector.scripts        = "ignored-by-toolbar" %}'
-                                + '{% set ginaDataInspector.stylesheets    = "ignored-by-toolbar" %}'
-                                + layout.replace('{{ page.scripts }}', '')
+                        if ( hasViews() && local.options.conf.env == 'dev' && (!local.options.isWithoutLayout || local.options.isWithoutLayout && local.options.debugMode)  ) {
 
+                            layout = ''
+                                + '{%- set ginaDataInspector                = JSON.parse(JSON.stringify(page)) -%}'
+                                + '{%- set ginaDataInspector.scripts        = "ignored-by-toolbar" -%}'
+                                + '{%- set ginaDataInspector.stylesheets    = "ignored-by-toolbar" -%}'
+                                + layout.replace('{{ page.scripts }}', '')
                                 ;
 
                             plugin = '\t'
                                 + '{# Gina Toolbar #}'
-                                + '{% set userDataInspector                = page %}'
-                                + '{% set userDataInspector.scripts        = "ignored-by-toolbar" %}'
-                                + '{% set userDataInspector.stylesheets    = "ignored-by-toolbar" %}'
-                                + '{% include "'+getPath('gina').core+'/asset/js/plugin/src/gina/toolbar/toolbar.html" with { gina: ginaDataInspector, user: userDataInspector} %}'
+                                + '{%- set userDataInspector                = page -%}'
+                                + '{%- set userDataInspector.scripts        = "ignored-by-toolbar" -%}'
+                                + '{%- set userDataInspector.stylesheets    = "ignored-by-toolbar" -%}'
+                                + '{%- include "'+getPath('gina').core+'/asset/js/plugin/src/gina/toolbar/toolbar.html" with { gina: ginaDataInspector, user: userDataInspector} -%}'
                                 + '{# END Gina Toolbar #}'
 
                                 + '\n<script type="text/javascript">'
@@ -489,7 +559,13 @@ function SuperController(options) {
                                 + '{{ page.scripts }}'
                             ;
 
+                            if (local.options.isWithoutLayout && local.options.debugMode) {
+                                var XHRData = '\t<input type="hidden" id="gina-without-layout-xhr-data" value="'+ encodeURIComponent(JSON.stringify(data.page.data)) +'">\n\r';
+                                layout = XHRData + layout;
+                            }
+
                             layout = layout.replace(/<\/body>/i, plugin + '\n\t</body>');
+
                         } else if ( hasViews() && local.options.conf.env == 'dev' && self.isXMLRequest() ) {
                             // means that we don't want GFF context or we already have it loaded
                             var XHRData = '\n<input type="hidden" id="gina-without-layout-xhr-data" value="'+ encodeURIComponent(JSON.stringify(data.page.data)) +'">';
@@ -519,9 +595,17 @@ function SuperController(options) {
                         layout = whisper(dic, layout, /\{{ ([a-zA-Z.]+) \}}/g );
 
                         try {
-                            layout = swig.compile(layout)(data)
+
+                            layout = swig.compile(layout)(data);
+                            // special case for template without layout in debug mode - dev only
+                            if ( hasViews() && local.options.isWithoutLayout && local.options.debugMode ) {
+                                layout = layout.replace(/<\/body>/i, plugin + '\n\t</body>');
+                                layout = whisper(dic, layout, /\{{ ([a-zA-Z.]+) \}}/g );
+                                layout = swig.compile(layout)(data);
+                            }
+
                         } catch (err) {
-                            var filename = local.options.views[data.file].html;
+                            var filename = local.options.views[data.view].html;
                             filename += ( typeof(data.page.namespace) != 'undefined' && data.page.namespace != '' && new RegExp('^' + data.page.namespace +'-').test(data.file) ) ? '/' + data.page.namespace + data.file.split(data.page.namespace +'-').join('/') + ( (data.page.ext != '') ? data.page.ext: '' ) : '/' + data.file+ ( (data.page.ext != '') ? data.page.ext: '' );
                             self.throwError(local.res, 500, 'Compilation error encountered while trying to process template `'+ filename + '`\n'+(err.stack||err.message))
                         }
@@ -561,17 +645,30 @@ function SuperController(options) {
     }
 
     this.isXMLRequest = function() {
-        return local.options.isXMLRequest
+        return local.options.isXMLRequest;
+    }
+
+    this.isWithCredentials = function() {
+        return ( /true/.test(local.options.withCredentials) ) ? true : false;
     }
 
     /**
      * Render JSON
      *
      * @param {object|string} jsonObj
+     * @param {object} [req]
+     * @param {object} [res]
      *
-     * @return {void}
+     * @callback {function} [next]
+     *
      * */
     this.renderJSON = function(jsonObj) {
+
+        var request     = local.req;
+        var response    = local.res;
+        var next        = local.next;
+
+
         if (!jsonObj) {
             var jsonObj = {}
         }
@@ -583,41 +680,66 @@ function SuperController(options) {
             }
 
             if( typeof(local.options) != "undefined" && typeof(local.options.charset) != "undefined" ){
-                local.res.setHeader("charset", local.options.charset);
+                response.setHeader("charset", local.options.charset);
             }
 
 
             //catching errors
             if (
-                typeof(jsonObj.errno) != 'undefined' && local.res.statusCode == 200
+                typeof(jsonObj.errno) != 'undefined' && response.statusCode == 200
                 || typeof(jsonObj.status) != 'undefined' && jsonObj.status != 200 && typeof(local.options.conf.server.coreConfiguration.statusCodes[jsonObj.status]) != 'undefined'
             ) {
 
                 try {
-                    local.res.statusCode    = jsonObj.status;
-                    local.res.statusMessage = local.options.conf.server.coreConfiguration.statusCodes[jsonObj.status];
+                    response.statusCode    = jsonObj.status;
+                    response.statusMessage = local.options.conf.server.coreConfiguration.statusCodes[jsonObj.status];
                 } catch (err){
-                    local.res.statusCode    = 500;
-                    local.res.statusMessage = err.stack;
+                    response.statusCode    = 500;
+                    response.statusMessage = err.stack;
                 }
             }
 
 
             // Internet Explorer override
-            if ( /msie/i.test(local.req.headers['user-agent']) ) {
-                local.res.setHeader("Content-Type", "text/plain")
+            if ( /msie/i.test(request.headers['user-agent']) ) {
+                response.setHeader("Content-Type", "text/plain")
             } else {
-                local.res.setHeader("Content-Type", local.options.conf.server.coreConfiguration.mime['json'])
+                response.setHeader("Content-Type", local.options.conf.server.coreConfiguration.mime['json'])
             }
 
-            if ( !local.res.headersSent ) {
-                console.info(local.req.method +' ['+local.res.statusCode +'] '+ local.req.url);
-                local.res.end(JSON.stringify(jsonObj));
-                local.res.headersSent = true
+            if ( !response.headersSent ) {
+                console.info(request.method +' ['+ response.statusCode +'] '+ request.url);
+
+                if ( local.options.isXMLRequest && self.isWithCredentials() )  {
+
+                    var data = JSON.stringify(jsonObj);
+                    var len = 0;
+                    // content length must be the right size !
+                    if ( typeof(data) === 'string') {
+                        len = Buffer.byteLength(data, 'utf8')
+                    } else {
+                        len = data.length
+                    }
+
+                    response.setHeader("Content-Length", len);
+
+                    response.write(data);
+                    response.headersSent = true;
+
+                    // required to close connection
+                    setTimeout(function () {
+                        response.end()
+                    }, 200);
+
+                    return // force completion
+
+                } else { // normal case
+                    response.end(JSON.stringify(jsonObj));
+                    response.headersSent = true
+                }
             }
         } catch (err) {
-
-            self.throwError(local.res, 500, err.stack||err.message)
+            self.throwError(response, 500, err.stack||err.message)
         }
 
     }
@@ -718,33 +840,67 @@ function SuperController(options) {
             self.throwError(500, 'No views configuration found. Did you try to add views before using Controller::render(...) ? Try to run: ./gina.sh -av '+options.conf.bundle)
         }
 
-        var res = '',
-            tmpRes = {},
-            css = {
+        var res     = '',
+            tmpRes  = {},
+            css     = {
                 media   : "screen",
                 rel     : "stylesheet",
                 type    : "text/css",
                 content : []
             },
-            cssStr = ' ',
-            js  = {
+            cssStr  = ' ',
+            js      = {
                 type    : "text/javascript",
                 content : []
             },
-            jsStr = ' ';
+            jsStr   = ' ',
+            exclude  = null;
 
         //intercept errors in case of malformed config
         if ( typeof(viewConf) != "object" ) {
-            cssStr = viewConf;
-            jsStr = viewConf
+            cssStr  = viewConf;
+            jsStr   = viewConf
         }
 
 
         //cascading merging
         if (localRessource !== 'default') {
             if ( typeof(viewConf[localRessource]) != 'undefined') {
-                //viewConf[localRessource] = merge(viewConf[localRessource], viewConf.default)
-                viewConf[localRessource] = merge(viewConf.default, viewConf[localRessource])
+
+                var noneDefaultJs   = (viewConf[localRessource]['javascripts']) ? JSON.parse(JSON.stringify(viewConf[localRessource]['javascripts'])) : [] ;
+                var noneDefaultCss  = (viewConf[localRessource]['stylesheets']) ? JSON.parse(JSON.stringify(viewConf[localRessource]['stylesheets'])) : [] ;
+
+                viewConf[localRessource] = merge(viewConf.default, viewConf[localRessource]);
+
+                if ( viewConf[localRessource]["javascriptsExclude"] ) {
+
+                    if ( Array.isArray(viewConf[localRessource]["javascriptsExclude"]) && !/(all|\*)/.test(viewConf[localRessource]["javascriptsExclude"][0]) || typeof(viewConf[localRessource]["javascriptsExclude"]) == 'string' && !/(all|\*)/.test(viewConf[localRessource]["javascriptsExclude"]) ) {
+
+                        for (var i = 0, len = viewConf.default['javascripts'].length; i<len; ++i) {
+                            if ( viewConf.default['javascripts'] && viewConf[localRessource]['javascripts'].indexOf(viewConf.default['javascripts'][i]) ) {
+                                viewConf[localRessource]['javascripts'].splice(viewConf[localRessource]['javascripts'].indexOf(viewConf.default['javascripts'][i]), 1)
+                            }
+                        }
+                    } else {// else means that we exclude all default
+                        viewConf[localRessource]['javascripts'] = noneDefaultJs;
+                    }
+                }
+
+                if ( viewConf[localRessource]["stylesheetsExclude"] ) {
+
+                    if ( Array.isArray(viewConf[localRessource]["stylesheetsExclude"]) && !/(all|\*)/.test(viewConf[localRessource]["stylesheetsExclude"][0]) || typeof(viewConf[localRessource]["stylesheetsExclude"]) == 'string' && !/(all|\*)/.test(viewConf[localRessource]["stylesheetsExclude"]) ) {
+
+                        for (var i = 0, len = viewConf.default['stylesheets'].length; i<len; ++i) {
+                            if ( viewConf.default['stylesheets'] && viewConf[localRessource]['javascripts'].indexOf(viewConf.default['javascripts'][i]) ) {
+                                viewConf[localRessource]['stylesheets'].splice(viewConf[localRessource]['javascripts'].indexOf(viewConf.default['javascripts'][i]), 1)
+                            }
+                        }
+                    } else {// else means that we exclude all default
+                        viewConf[localRessource]['stylesheets'] = noneDefaultJs;
+                    }
+                }
+
+
             } else {
                 viewConf[localRessource] = viewConf.default
             }
@@ -752,17 +908,19 @@ function SuperController(options) {
 
         //Get css
         if( viewConf[localRessource]["stylesheets"] ) {
-            tmpRes = getNodeRes('css', cssStr, viewConf[localRessource]["stylesheets"], css);
-            cssStr = tmpRes.cssStr;
-            css = tmpRes.css;
-            tmpRes = null
+            tmpRes  = getNodeRes('css', cssStr, viewConf[localRessource]["stylesheets"], css);
+
+            cssStr  = tmpRes.cssStr;
+            css     = tmpRes.css;
+            tmpRes  = null
         }
         //Get js
         if( viewConf[localRessource]["javascripts"] ) {
-            tmpRes = getNodeRes('js', jsStr, viewConf[localRessource]["javascripts"], js);
-            jsStr = tmpRes.jsStr;
-            js = tmpRes.js;
-            tmpRes = null
+            tmpRes  = getNodeRes('js', jsStr, viewConf[localRessource]["javascripts"], js);
+
+            jsStr   = tmpRes.jsStr;
+            js      = tmpRes.js;
+            tmpRes  = null
         }
 
         set('page.stylesheets', cssStr);
@@ -849,6 +1007,9 @@ function SuperController(options) {
     /**
      * redirect
      *
+     * TODO - improve redirect based on `utils.routing`
+     * e.g.: self.redirect('project-get', { companyId: companyId, clientId: clientId, id: projectId }, true)
+     *
      * You have to ways of using this method
      *
      * 1) Through routing.json
@@ -884,6 +1045,7 @@ function SuperController(options) {
      *
      * @param {object|string} req|rule - Request Object or Rule/Route name
      * @param {object|boolean} res|ignoreWebRoot - Response Object or Ignore WebRoot & start from domain root: /
+     * @param {object} [params] TODO
      *
      * @callback [ next ]
      * */
@@ -1142,31 +1304,28 @@ function SuperController(options) {
         hostname  : undefined, // cname of the host e.g.: `www.google.com` or `localhost`
         path    : undefined, // e.g.: /test.html
         port    : 80, // #80 by default but can be 3000
-        method  : 'POST', // POST | GET | PUT | DELETE
+        method  : 'GET', // POST | GET | PUT | DELETE
         agent   : false,
         keepAlive: true,
         auth    : undefined, // use `"username:password"` for basic authentification
         rejectUnauthorized: undefined, // ignore verification when requesting on https (443)
         headers : {
             'Content-Type': 'application/json',
-            //'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            // 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+
+            // 'X-Requested-With': 'XMLHttpRequest' // to convert into an XHR query
             'Content-Length': local.query.data.length
         }
     };
 
     this.query = function(options, data, callback) {
 
-        local.query.options.method                  = options.method || local.req.method;
-
-        if ( typeof(local.req.headers['content-type']) != 'undefined' ) {
-            local.query.options.headers['Content-Type'] = local.req.headers['content-type']
-        }
-
         var queryData           = {}
             , defaultOptions    = local.query.options
             , path              = options.path
             , browser           = null
-            , options           = merge(options, defaultOptions);
+            , options           = merge(options, defaultOptions)
+        ;
 
         for (var o in options) {//cleaning
             if ( typeof(options[o]) == 'undefined' || options[o] == undefined) {
@@ -1228,13 +1387,23 @@ function SuperController(options) {
             options.headers['Content-Type'] = local.options.conf.server.coreConfiguration.mime['json'];
         }
 
+        if ( typeof(local.req.headers.cookie) != 'undefined' ) { // useful for CORS : forward cookies from the original request
+            options.headers.cookie = local.req.headers.cookie;
+        }
+
         //you need this, even when empty.
         options.headers['Content-Length'] = queryData.length;
+
         browser = (options.port == 443) ? https : http;
 
         var req = browser.request(options, function(res) {
 
             res.setEncoding('utf8');
+
+            // upgrade response headers to handler
+            if ( typeof(res.headers['access-control-allow-credentials']) != 'undefined' )
+                local.options.withCredentials = res.headers['access-control-allow-credentials'];
+
 
             var data = '';
 
@@ -1312,7 +1481,7 @@ function SuperController(options) {
         }
 
         return {
-            onComplete: function(cb) {
+            onComplete  : function(cb) {
                 self.once('query#complete', function(err, data){
 
                     if ( typeof(data) == 'string' && /^(\{|%7B|\[{)/.test(data) ) {
@@ -1447,14 +1616,86 @@ function SuperController(options) {
     }
 
     /**
+     * Get locales
+     *
+     * @param {string} [shortCountryCode] - e.g. EN
+     *
+     * @return {object} locales
+     * */
+    this.getLocales = function (shortCountryCode) {
+
+        var userLocales = local.options.conf.locales;
+
+        if ( typeof(shortCountryCode) != 'undefined' ) {
+
+            var locales         = new Collection( getContext('gina').locales );
+
+            try {
+                userLocales = locales.findOne({ lang: userLangCode }).content
+            } catch (err) {
+                console.warn('language code `'+ userLangCode +'` not handled to setup locales: replacing by `en`');
+                userLocales = locales.findOne({ lang: 'en' }).content // by default
+            }
+        }
+
+
+        /**
+         * Get countries list
+         *
+         * @param {string} [code] - e.g.: short, long, fifa, m49
+         *
+         * @return {object} countries - countries code & value list
+         * */
+        var getCountries = function (code) {
+            var list = {}, cde = 'short', name = null;
+
+            if ( typeof(code) != 'undefined' && typeof(userLocales[0][code]) == 'string' ) {
+                cde = code
+            } else if ( typeof(code) != 'undefined' ) (
+                console.warn('`'+ code +'` not supported : sticking with `short` code')
+            )
+
+            for ( var i = 0, len = userLocales.length; i< len; ++i ) {
+
+                if (userLocales[i][cde]) {
+
+                    name = userLocales[i].full || userLocales[i].officialName.short;
+
+                    if ( name )
+                        list[ userLocales[i][cde] ] = name;
+                }
+            }
+
+            return list
+        }
+
+        return {
+            'getCountries': getCountries
+        }
+    }
+
+    /**
      * Get forms rules
+     *
+     * @param {string} [formId]
      *
      * @return {object} rules
      *
      * */
-    this.getFormsRules = function () {
+    this.getFormsRules = function (formId) {
         try {
-            return JSON.parse(JSON.stringify(local.options.conf.content.forms)).rules
+
+            if ( typeof(formId) != 'undefined' ) {
+                try {
+                    formId = formId.replace(/\-/g, '.');
+                    return JSON.parse(JSON.stringify(local.options.conf.content.forms)).rules[formId]
+                } catch (err) {
+                    self.throwError(err)
+                }
+            } else {
+                return JSON.parse(JSON.stringify(local.options.conf.content.forms)).rules
+            }
+
         } catch (err) {
             self.throwError(local.res, 500, err.stack||err.message)
         }
@@ -1470,16 +1711,29 @@ function SuperController(options) {
      * @return {void}
      * */
     this.throwError = function(res, code, msg) {
+
         if (arguments.length == 1 && typeof(res) == 'object' ) {
-            var code    = ( typeof(res.status) != 'undefined' ) ?  res.status : 500
-                , msg   = res.stack || res.message || res.error
-                , res   = local.res;
+            var code    = ( res && typeof(res.status) != 'undefined' ) ?  res.status : 500;
+                //, msg   = res.stack || res.message || res.error
+            var msg = {};
+
+            if ( res instanceof Error) {
+                msg.error   = res.message;
+                msg.stack   = res.stack;
+            } else {
+                msg = JSON.parse(JSON.stringify(res))
+            }
+
+            var res   = local.res;
 
         } else if (arguments.length < 3) {
             var msg             = code || null
                 , code          = res || 500
                 , res           = local.res;
         }
+
+        var req     = local.req;
+        var next    = local.next;
 
         if (!res.headersSent) {
             if ( self.isXMLRequest() || !hasViews() || !local.options.isUsingTemplate ) {
@@ -1489,25 +1743,72 @@ function SuperController(options) {
                     code    = code.status || 500;
                 }
 
+                if ( !req.headers['content-type'] ) {
+                    req.headers['content-type'] = local.options.conf.server.coreConfiguration.mime['json']
+                }
                 // Internet Explorer override
-                if ( /msie/i.test(local.req.headers['user-agent']) ) {
-                    res.writeHead(code, "Content-Type", "text/plain")
+                if ( typeof(req.headers['user-agent']) != 'undefined' ) {
+                    if ( /msie/i.test(req.headers['user-agent']) ) {
+                        res.writeHead(code, "Content-Type", "text/plain")
+                    } else {
+                        res.writeHead(code, { 'Content-Type': req.headers['content-type']} )
+                    }
+                } else if ( typeof(req.headers['content-type']) != 'undefined' ) {
+                    res.writeHead(code, { 'Content-Type': req.headers['content-type']} )
                 } else {
-                    res.writeHead(code, { 'Content-Type': 'application/json'} )
+                    res.writeHead(code, "Content-Type", local.options.conf.server.coreConfiguration.mime['json'])
                 }
 
-                console.error(local.req.method +' ['+local.res.statusCode +'] '+ local.req.url);
+                console.error(req.method +' ['+res.statusCode +'] '+ req.url);
                 res.end(JSON.stringify({
                     status: code,
-                    error: msg.stack || msg.message || msg
+                    error: msg.error || msg,
+                    stack: msg.stack
                 }))
             } else {
                 res.writeHead(code, { 'Content-Type': 'text/html'} );
-                console.error(local.req.method +' ['+local.res.statusCode +'] '+ local.req.url);
-                res.end('<h1>Error '+ code +'.</h1><pre>'+ msg + '</pre>')
+                console.error(req.method +' ['+ res.statusCode +'] '+ req.url);
+
+                //var msgString = msg.stack || msg.error || msg;
+                var msgString = '<h1 class="status">Error '+ code +'.</h1>';
+                var eCode = code.toString().substr(0,1);
+
+                if ( typeof(msg) == 'object' ) {
+
+                    if (msg.title) {
+                        msgString += '<pre class="'+ eCode +'xx title">'+ msg.title +'</pre>';
+                    }
+
+                    if (msg.error) {
+                        msgString += '<pre class="'+ eCode +'xx message">'+ msg.error +'</pre>';
+                    }
+
+                    if (msg.message) {
+                        msgString += '<pre class="'+ eCode +'xx message">'+ msg.message +'</pre>';
+                    }
+
+                    if (msg.stack) {
+
+                        if (msg.error) {
+                            msg.stack = msg.stack.replace(msg.error, '')
+                        }
+
+                        if (msg.message) {
+                            msg.stack = msg.stack.replace(msg.message, '')
+                        }
+
+                        msg.stack = msg.stack.replace('Error:', '').replace(' ', '');
+                        msgString += '<pre class="'+ eCode +'xx stack">'+ msg.stack +'</pre>';
+                    }
+
+                } else {
+                    msgString += '<pre class="'+ eCode +'xx message">'+ msg +'</pre>';
+                }
+
+                res.end(msgString)
             }
         } else {
-            local.next()
+            next()
         }
     }
 

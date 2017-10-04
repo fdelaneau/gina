@@ -63,54 +63,6 @@ define('gina/popin', [ 'require', 'jquery', 'vendor/uuid','utils/merge', 'utils/
         var registeredPopins = [];
 
 
-        // var on = function(event, cb) {
-        //
-        //     if ( events.indexOf(event) < 0 ) {
-        //         cb(new Error('Event `'+ event +'` not handled by ginaPopinEventHandler'))
-        //     } else {
-        //         var $target = null, id = null;
-        //         if ( typeof(this.id) != 'undefined' ) {
-        //
-        //             $target = instance.target;
-        //             id      = this.id;
-        //         } else if ( typeof(this.target) != 'undefined'  ) {
-        //             $target = this.target;
-        //             id      = ( typeof($target.getAttribute) != 'undefined' ) ? $target.getAttribute('id') : this.id;
-        //         } else {
-        //             $target = instance.target;
-        //             id      = instance.id;
-        //         }
-        //
-        //         event += '.' + id;
-        //
-        //
-        //         if (!gina.events[event]) {
-        //
-        //             addListener(gina, $target, event, function(e) {
-        //                 cancelEvent(e);
-        //
-        //                 var data = null;
-        //                 if (e['detail']) {
-        //                     data = e['detail'];
-        //                 } else if ( typeof(instance.eventData.submit) != 'undefined' ) {
-        //                     data = instance.eventData.submit
-        //                 } else if ( typeof(instance.eventData.error) != 'undefined' ) {
-        //                     data = instance.eventData.error
-        //                 } else if ( typeof(instance.eventData.success) != 'undefined' ) {
-        //                     data = instance.eventData.success;
-        //                 }
-        //
-        //                 cb(e, data)
-        //
-        //             });
-        //
-        //             if (!instance.isReady)
-        //                 init(options)
-        //         }
-        //     }
-        // };
-
-
         /**
          * popinCreateContainer
          *
@@ -235,8 +187,7 @@ define('gina/popin', [ 'require', 'jquery', 'vendor/uuid','utils/merge', 'utils/
 
                                     popinOpen($popin.name);
                                 }
-                            })
-
+                            });
 
                             // loading & binding popin
                             popinLoad($popin.name, e.target.url);
@@ -265,6 +216,13 @@ define('gina/popin', [ 'require', 'jquery', 'vendor/uuid','utils/merge', 'utils/
                     event.target.id = event.target.getAttribute('id')
                 }
 
+                if ( /^popin\.close\./.test(event.target.id) ) {
+                    cancelEvent(event);
+
+                    var _evt = event.target.id;
+
+                    triggerEvent(gina, event.target, _evt, event.detail);
+                }
 
                 if ( /^popin\.click\./.test(event.target.id) ) {
                     cancelEvent(event);
@@ -307,6 +265,7 @@ define('gina/popin', [ 'require', 'jquery', 'vendor/uuid','utils/merge', 'utils/
         function popinLoad(name, url, options) {
 
             var id          = 'gina-popin-' + instance.id +'-'+ name;
+
             // popin element
             var $el         = document.getElementById(id) || null;
 
@@ -375,7 +334,7 @@ define('gina/popin', [ 'require', 'jquery', 'vendor/uuid','utils/merge', 'utils/
 
                                 instance.eventData.success = result;
 
-                                triggerEvent(gina, $el, 'loaded.' + id, result)
+                                triggerEvent(gina, $el, 'loaded.' + id, result);
 
                             } catch (err) {
                                 var result = {
@@ -396,6 +355,24 @@ define('gina/popin', [ 'require', 'jquery', 'vendor/uuid','utils/merge', 'utils/
                             };
 
                             instance.eventData.error = result;
+
+                            // update toolbar
+                            var XHRData = result;
+                            if ( gina && typeof(window.ginaToolbar) == "object" && XHRData ) {
+                                try {
+                                    if ( XHRData.error && /^(\{|\[).test(XHRData.error) /)
+                                        XHRData.error = JSON.parse(XHRData.error);
+
+                                    // bad .. should not happen
+                                    if ( typeof(XHRData.error.error) != 'undefined' )
+                                        XHRData.error = XHRData.error.error;
+
+                                    ginaToolbar.update("data-xhr", XHRData )
+                                } catch (err) {
+                                    throw err
+                                }
+                            }
+
 
                             triggerEvent(gina, $el, 'error.' + id, result)
                         }
@@ -438,7 +415,45 @@ define('gina/popin', [ 'require', 'jquery', 'vendor/uuid','utils/merge', 'utils/
 
                 return {
                     'open': function () {
-                        popinOpen(name)
+                        var fired = false;
+                        addListener(gina, $el, 'loaded.' + id, function(e) {
+                        //$popin.on('loaded', function (e) {
+                            e.preventDefault();
+
+                            if (!fired) {
+                                fired = true;
+
+                                e.target.innerHTML = e.detail;
+
+
+                                // bind with formValidator if forms are found
+                                if ( /<form/i.test(e.target.innerHTML) && typeof($validator) != 'undefined' ) {
+                                    var _id = null;
+                                    var $forms = e.target.getElementsByTagName('form');
+                                    for (var i = 0, len = $forms.length; i < len; ++i) {
+
+                                        if ( !$forms[i]['id'] || typeof($forms[i]) != 'string' ) {
+                                            _id = $forms[i].getAttribute('id') || 'form.' + uuid.v1();
+                                            $forms[i].setAttribute('id', _id);// just in case
+                                            $forms[i]['id'] = _id
+                                        } else {
+                                            _id = $forms[i]['id']
+                                        }
+
+                                        //console.log('pushing ', _id, $forms[i]['id'], typeof($forms[i]['id']), $forms[i].getAttribute('id'));
+                                        if ($popin['$forms'].indexOf(_id) < 0)
+                                            $popin['$forms'].push(_id);
+
+                                        $forms[i].close = popinClose;
+                                        $validator.validateFormById($forms[i].getAttribute('id')) //$forms[i]['id']
+
+                                        removeListener(gina, $popin.target, e.type);
+                                    }
+                                }
+
+                                popinOpen($popin.name);
+                            }
+                        });
                     }
                 }
             }
@@ -467,8 +482,43 @@ define('gina/popin', [ 'require', 'jquery', 'vendor/uuid','utils/merge', 'utils/
                 // don't cancel here, it will corrupt child elements behaviors such as checkboxes and radio buttons
 
                 if ( /gina-popin-is-active/.test(event.target.className) ) {
+
+
+                    // remove listeners
+                    removeListener(gina, event.target, 'click');
+
+                    // binding popin close
+                    var $close = [], $buttonsTMP = [];
+
+                    $buttonsTMP = $el.getElementsByTagName('button');
+                    if ( $buttonsTMP.length > 0 ) {
+                        for(var b = 0, len = $buttonsTMP.length; b < len; ++b) {
+                            if ( /gina-popin-close/.test($buttonsTMP[b].className) )
+                                $close.push($buttonsTMP[b])
+                        }
+                    }
+
+                    $buttonsTMP = $el.getElementsByTagName('div');
+                    if ( $buttonsTMP.length > 0 ) {
+                        for(var b = 0, len = $buttonsTMP.length; b < len; ++b) {
+                            if ( /gina-popin-close/.test($buttonsTMP[b].className) )
+                                $close.push($buttonsTMP[b])
+                        }
+                    }
+
+                    $buttonsTMP = $el.getElementsByTagName('a');
+                    if ( $buttonsTMP.length > 0 ) {
+                        for(var b = 0, len = $buttonsTMP.length; b < len; ++b) {
+                            if ( /gina-popin-close/.test($buttonsTMP[b].className) )
+                                $close.push($buttonsTMP[b])
+                        }
+                    }
+
+                    for (var b = 0, len = $close.length; b < len; ++b) {
+                        removeListener(gina, $close[b], $close[b].getAttribute('id') )
+                    }
+
                     popinClose(name);
-                    removeListener(gina, event.target, 'click')
                 }
             });
 
@@ -534,7 +584,7 @@ define('gina/popin', [ 'require', 'jquery', 'vendor/uuid','utils/merge', 'utils/
 
                 if (!$close[b]['id']) {
 
-                    evt = 'click.'+ uuid.v1();
+                    evt = 'popin.close.'+ uuid.v1();
                     $close[b]['id'] = evt;
                     $close[b].setAttribute( 'id', evt);
 
@@ -550,7 +600,6 @@ define('gina/popin', [ 'require', 'jquery', 'vendor/uuid','utils/merge', 'utils/
 
                         popinClose(name);
                         removeListener(gina, event.target, event.type)
-
                     });
                 }
 
@@ -562,7 +611,7 @@ define('gina/popin', [ 'require', 'jquery', 'vendor/uuid','utils/merge', 'utils/
 
 
             if ( /gina-popin-is-active/.test(event.target.className) ) {
-                removeListener(gina, event.target, 'click')
+                removeListener(gina, event.target, event.target.getAttribute('id'))
             }
 
             $popin.isOpen = true;
@@ -576,7 +625,10 @@ define('gina/popin', [ 'require', 'jquery', 'vendor/uuid','utils/merge', 'utils/
 
                     if ( typeof(XHRData.value) != 'undefined' && XHRData.value ) {
                         XHRData = JSON.parse( decodeURIComponent( XHRData.value ) );
-                        ginaToolbar.update("data", XHRData);
+                        // reset data-xhr
+                        ginaToolbar.update("data-xhr", null);
+
+                        ginaToolbar.update("data-xhr", XHRData);
                     }
 
                 } catch (err) {
@@ -616,12 +668,17 @@ define('gina/popin', [ 'require', 'jquery', 'vendor/uuid','utils/merge', 'utils/
                 var i = 0, formsLength = $popin['$forms'].length;
                 if ($validator['$forms'] && formsLength > 0) {
                     for (; i < formsLength; ++i) {
-                        $validator['$forms'][ $popin['$forms'][i] ].destroy();
+                        if ( typeof($validator['$forms'][ $popin['$forms'][i] ]) != 'undefined' )
+                            $validator['$forms'][ $popin['$forms'][i] ].destroy();
+
                         $popin['$forms'].splice( i, 1);
                     }
                 }
                 // remove listeners
                 removeListener(gina, $popin.target, 'loaded.' + $popin.id);
+
+
+
 
                 $popin.isOpen = false;
 
@@ -682,6 +739,9 @@ define('gina/popin', [ 'require', 'jquery', 'vendor/uuid','utils/merge', 'utils/
                 $popin.loadContent  = popinLoadContent;
                 $popin.open         = popinOpen;
                 $popin.close        = popinClose;
+
+                if ( typeof($validator) != 'undefined' )
+                    $popin.validateFormById = $validator.validateFormById;
 
                 // setting up AJAX
                 if (window.XMLHttpRequest) { // Mozilla, Safari, ...
